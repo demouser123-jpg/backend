@@ -965,7 +965,7 @@ def segment_dicom_from_orthanc(instance_id):
         print(f"Error processing DICOM: {e}")
         return jsonify({"error": f"Failed to process DICOM image: {str(e)}"}), 500
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8000))
     app.run(host='0.0.0.0', port=port)
 
 # Sample data just to simulate segments (replace with your own logic)
