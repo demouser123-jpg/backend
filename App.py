@@ -20,9 +20,12 @@ from io import BytesIO
 
 app = Flask(__name__)
 CORS(app)
+@app.route('/')
+def home():
+    return "Flask ML Backend is Live!"
 
 # Load model
-MODEL_PATH = r"C:\Users\PMYLS\Desktop\new\my-app\backend\model.h5"
+MODEL_PATH = r"model.h5"
 if os.path.exists(MODEL_PATH):
     try:
         model = tf.keras.models.load_model(MODEL_PATH, compile=False)
