@@ -2,11 +2,13 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import numpy as np
 import nibabel as nib
+import pandas as pd
 from datetime import datetime, timedelta
 import random
 import base64
 import cv2
 import tempfile
+import jwt
 import os
 import tensorflow as tf
 import requests
@@ -18,14 +20,17 @@ from datetime import datetime
 import pydicom  # Make sure you have this installed
 from io import BytesIO
 
-app = Flask(__name__)
-CORS(app)
-@app.route('/')
-def home():
-    return "Flask ML Backend is Live!"
 
-# Load model
-MODEL_PATH = r"model.h5"
+
+
+app = Flask(_name_)
+CORS(app)
+
+BASE_DIR = os.path.dirname(os.path.abspath(_file_))
+
+# Build the full path to model.h5
+MODEL_PATH = os.path.join(BASE_DIR, "model.h5")
+
 if os.path.exists(MODEL_PATH):
     try:
         model = tf.keras.models.load_model(MODEL_PATH, compile=False)
@@ -45,6 +50,28 @@ scanned_images = {modality: {} for modality in ["T1N", "T1C", "T2W", "T2F"]}
 ORTHANC_URL = "http://localhost:8042"  # Default Orthanc server URL
 ORTHANC_AUTH = ('orthanc', 'orthanc')  # Default Orthanc credentials
 PACS_ENABLED = True  # Flag to enable/disable PACS functionality
+
+
+SECRET_KEY = "your_secret_key"  # Replace with your actual secret key
+
+def decode_jwt_token(auth_token):
+    try:
+        # Split the token from the header
+        token_parts = auth_token.split()
+        if len(token_parts) == 2 and token_parts[0].lower() == 'bearer':
+            token = token_parts[1]
+            
+            # Decode and verify the token using the secret key
+            decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            return decoded.get('id')  # Assuming the 'id' is in the payload
+    except jwt.ExpiredSignatureError:
+        print("❌ Token has expired")
+    except jwt.InvalidTokenError as e:
+        print(f"❌ Invalid token: {e}")
+    except Exception as e:
+        print(f"❌ Error decoding token: {e}")
+    
+    return None
 
 def preprocess_nii(file_path, modality):
     try:
@@ -109,7 +136,7 @@ def upload_scans():
             # Extract user ID from token
             token_parts = auth_token.split()
             if len(token_parts) == 2 and token_parts[0].lower() == 'bearer':
-                import jwt
+              
                 decoded = jwt.decode(token_parts[1], options={"verify_signature": False})
                 user_id = decoded.get('id')
                 print(f"Extracted user ID from token: {user_id}")
@@ -153,7 +180,7 @@ def upload_scans():
                         }
                         
                         node_response = requests.post(
-                            "http://localhost:5001/register-scan",
+                            "http://localhost:5000/register-scan",
                             json=payload,
                             headers={"Authorization": auth_token}
                         )
@@ -172,7 +199,7 @@ def upload_scans():
                 try:
                     os.remove(temp.name)
                 except Exception as e:
-                    print(f"⚠️ Error deleting temp file: {e}")
+                    print(f"⚠ Error deleting temp file: {e}")
         else:
             if file:
                 uploaded[modality] = "Invalid file format (must be .nii or .nii.gz)"
@@ -215,6 +242,9 @@ def check_tumor_existence():
     except Exception as e:
         print(f"❌ Error in tumor detection: {e}")
         return jsonify({"error": "Failed to process the image"}), 500
+@app.route('/')
+def home():
+    return "Welcome!"
 
 
 @app.route("/create-segmentation-zip/<modality>", methods=["GET"])
@@ -241,7 +271,7 @@ def create_segmentation_zip(modality):
             memory_file,
             mimetype='application/zip',
             as_attachment=True,
-            download_name=f"{modality}_segmentation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            download_name=f"{modality}segmentation{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         )
     except Exception as e:
         print(f"❌ Error creating ZIP file: {e}")
@@ -290,7 +320,7 @@ def save_results():
             
             # Current timestamp for filename
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            zip_filename = f"{modality}_segmentation_{timestamp}.zip"
+            zip_filename = f"{modality}segmentation{timestamp}.zip"
             
         except Exception as e:
             print(f"❌ Error creating ZIP file: {str(e)}")
@@ -303,7 +333,7 @@ def save_results():
             headers['Authorization'] = auth_token
             print(f"📤 Using auth token: {auth_token[:15]}...")
         else:
-            print("⚠️ No auth token provided")
+            print("⚠ No auth token provided")
             return jsonify({"error": "Authentication required"}), 401
 
         # Send data to Node.js backend - now we only send the ZIP data, not the results JSON
@@ -349,7 +379,7 @@ def download_segmentation(filename):
     try:
         # Path where segmentation ZIP files are stored
         # You might need to adjust this path based on your file storage location
-        uploads_dir = os.path.join(os.path.dirname(__file__), 'segmentation_files')
+        uploads_dir = os.path.join(os.path.dirname(_file_), 'segmentation_files')
         if not os.path.exists(uploads_dir):
             os.makedirs(uploads_dir)
         
@@ -447,7 +477,7 @@ def generate_combined_segmentation():
         filename = f"combined_segmentation_{timestamp}.zip"
         
         # Save file for future access
-        uploads_dir = os.path.join(os.path.dirname(__file__), 'segmentation_files')
+        uploads_dir = os.path.join(os.path.dirname(_file_), 'segmentation_files')
         if not os.path.exists(uploads_dir):
             os.makedirs(uploads_dir)
         
@@ -494,12 +524,12 @@ def generate_segmentation_images(modality):
                     img_data = base64.b64decode(img_base64)
                     
                     # Save each image with a meaningful filename
-                    image_filename = f"{modality}_{view}_slice_{i:03d}.png"
+                    image_filename = f"{modality}{view}_slice{i:03d}.png"
                     zf.writestr(image_filename, img_data)
         
         # Create timestamp for the filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        download_filename = f"{modality}_segmentation_{timestamp}.zip"
+        download_filename = f"{modality}segmentation{timestamp}.zip"
         
         # Return the zip file
         memory_file.seek(0)
@@ -581,7 +611,7 @@ def save_segmentation_results(user_id, modality, results, zip_buffer):
     # Encode the zip file as base64
     try:
         zip_data = base64.b64encode(zip_buffer.getvalue()).decode('utf-8')
-        zip_filename = f"segmentation_{modality}_{user_id}_{int(time.time())}.zip"
+        zip_filename = f"segmentation_{modality}{user_id}{int(time.time())}.zip"
         
         print("✅ Sending zipFilename:", zip_filename)
         print("✅ Zip data size (chars):", len(zip_data))
@@ -697,221 +727,36 @@ def generate_html_viewer(modalities):
         return None
     # Mock data generator
 def generate_model_performance():
-    epochs = list(range(1, 21))
-    
-    # Generate realistic-looking training curves
-    loss = [1 - 0.8 * (1 - np.exp(-0.3 * x)) + random.uniform(-0.05, 0.05) for x in epochs]
-    val_loss = [1 - 0.75 * (1 - np.exp(-0.25 * x)) + random.uniform(-0.05, 0.05) for x in epochs]
-    
-    accuracy = [0.7 + 0.25 * (1 - np.exp(-0.4 * x)) + random.uniform(-0.03, 0.03) for x in epochs]
-    val_accuracy = [0.65 + 0.25 * (1 - np.exp(-0.35 * x)) + random.uniform(-0.03, 0.03) for x in epochs]
-    
-    dice_coefficient = [0.6 + 0.35 * (1 - np.exp(-0.3 * x)) + random.uniform(-0.02, 0.02) for x in epochs]
-    
+    # Load Excel file
+    df = pd.read_csv('training_log.csv')  # Update filename if needed
+
+    epochs = df['epoch'].tolist()
+
     return {
         "epochs": epochs,
         "history": {
-            "loss": loss,
-            "val_loss": val_loss,
-            "accuracy": accuracy,
-            "val_accuracy": val_accuracy,
-            "dice_coefficient": dice_coefficient
+            "loss": df['loss'].tolist(),
+            "val_loss": df['val_loss'].tolist(),
+            "accuracy": df['accuracy'].tolist(),
+            "val_accuracy": df['val_accuracy'].tolist(),
+            "dice_coefficient": df['dice_coef'].tolist(),  # or val_dice_coef
         },
         "current_metrics": {
-            "precision": 0.85 + random.uniform(-0.02, 0.02),
-            "recall": 0.82 + random.uniform(-0.02, 0.02),
-            "f1_score": 0.83 + random.uniform(-0.02, 0.02),
-            "iou": 0.78 + random.uniform(-0.02, 0.02)
+            "precision": float(df['val_precision'].iloc[-1]),
+            "recall": float(df['val_sensitivity'].iloc[-1]),  # sensitivity == recall
+            "f1_score": float(df['val_dice_coef'].iloc[-1]),  # Dice ≈ F1
+            "iou": float(df['val_mean_io_u'].iloc[-1]),
         },
         "model_info": {
             "name": "3D-UNet Brain Tumor Segmentation",
             "framework": "TensorFlow/Keras",
-            "last_updated": (datetime.now() - timedelta(minutes=random.randint(0, 60))).isoformat()
+            "last_updated": datetime.fromtimestamp(os.path.getmtime("model.h5")).isoformat()
         }
     }
 
 @app.route('/api/model-performance', methods=['GET'])
 def get_model_performance():
     return jsonify(generate_model_performance())
-# @app.route('/orthanc/studies', methods=['GET'])
-# def list_orthanc_studies():
-#     try:
-#         response = requests.get(f"{ORTHANC_URL}/studies", auth=ORTHANC_AUTH)
-#         study_ids = response.json()
-#         studies = []
-
-#         for sid in study_ids:
-#             meta = requests.get(f"{ORTHANC_URL}/studies/{sid}", auth=ORTHANC_AUTH).json()
-#             studies.append({
-#                 "StudyID": sid,
-#                 "PatientName": meta.get("MainDicomTags", {}).get("PatientName", "Unknown"),
-#                 "StudyDate": meta.get("MainDicomTags", {}).get("StudyDate", "N/A"),
-#             })
-
-#         return jsonify(studies)
-
-#     except Exception as e:
-#         return jsonify({"error": f"Failed to fetch studies: {str(e)}"}), 500
-# @app.route("/process-pacs-image/<instance_id>", methods=["GET"])
-# def process_pacs_image(instance_id):
-#     """
-#     Process a DICOM image from Orthanc PACS server
-#     """
-#     try:
-#         # Get the auth token from the request
-#         auth_token = request.headers.get('Authorization')
-#         if not auth_token:
-#             return jsonify({"error": "No authorization token provided"}), 401
-            
-#         # Extract user ID from token if possible
-#         user_id = None
-#         try:
-#             token_parts = auth_token.split()
-#             if len(token_parts) == 2 and token_parts[0].lower() == 'bearer':
-#                 import jwt
-#                 decoded = jwt.decode(token_parts[1], options={"verify_signature": False})
-#                 user_id = decoded.get('id')
-#         except Exception as e:
-#             print(f"❌ Error extracting user ID from token: {e}")
-            
-#         if not user_id:
-#             return jsonify({"error": "Could not extract user ID from token"}), 400
-
-#         # Fetch the DICOM file from Orthanc
-#         orthanc_url = f"{ORTHANC_URL}/instances/{instance_id}/file"
-#         print(f"📡 Fetching DICOM from: {orthanc_url}")
-        
-#         response = requests.get(orthanc_url, auth=ORTHANC_AUTH)
-#         if response.status_code != 200:
-#             return jsonify({"error": f"Failed to fetch image from PACS server: {response.status_code}"}), response.status_code
-            
-#         # First, try to get the series information to check if we have a 3D volume
-#         try:
-#             # Get the series ID from the instance
-#             instance_info_url = f"{ORTHANC_URL}/instances/{instance_id}"
-#             instance_info = requests.get(instance_info_url, auth=ORTHANC_AUTH).json()
-            
-#             if "ParentSeries" in instance_info:
-#                 series_id = instance_info["ParentSeries"]
-#                 series_url = f"{ORTHANC_URL}/series/{series_id}"
-#                 series_info = requests.get(series_url, auth=ORTHANC_AUTH).json()
-                
-#                 # If this is a multi-slice series, we should download all instances
-#                 if "Instances" in series_info and len(series_info["Instances"]) > 1:
-#                     print(f"📊 Found series with {len(series_info['Instances'])} instances")
-                    
-#                     # Create a temporary directory for the DICOM files
-#                     with tempfile.TemporaryDirectory() as temp_dir:
-#                         # Download all instances in the series
-#                         dicom_files = []
-#                         for inst_id in series_info["Instances"]:
-#                             inst_url = f"{ORTHANC_URL}/instances/{inst_id}/file"
-#                             inst_response = requests.get(inst_url, auth=ORTHANC_AUTH)
-                            
-#                             if inst_response.status_code == 200:
-#                                 dicom_path = os.path.join(temp_dir, f"{inst_id}.dcm")
-#                                 with open(dicom_path, 'wb') as f:
-#                                     f.write(inst_response.content)
-#                                 dicom_files.append(dicom_path)
-                        
-#                         if dicom_files:
-#                             # Sort the files by slice location
-#                             sorted_dicoms = []
-#                             for f in dicom_files:
-#                                 try:
-#                                     dcm = pydicom.dcmread(f)
-#                                     slice_location = dcm.get((0x0020, 0x1041), None)
-#                                     if slice_location:
-#                                         sorted_dicoms.append((float(slice_location.value), f))
-#                                     else:
-#                                         # Fallback if slice location is not available
-#                                         sorted_dicoms.append((len(sorted_dicoms), f))
-#                                 except Exception as e:
-#                                     print(f"Error reading DICOM {f}: {e}")
-                            
-#                             sorted_dicoms.sort()
-#                             sorted_files = [f for _, f in sorted_dicoms]
-                            
-#                             # Load the first DICOM to get dimensions
-#                             first_dcm = pydicom.dcmread(sorted_files[0])
-#                             shape = first_dcm.pixel_array.shape
-                            
-#                             # Create a 3D volume
-#                             volume = np.zeros((shape[0], shape[1], len(sorted_files)))
-                            
-#                             # Fill the volume with pixel data
-#                             for i, file_path in enumerate(sorted_files):
-#                                 dcm = pydicom.dcmread(file_path)
-#                                 volume[:, :, i] = dcm.pixel_array
-                            
-#                             # Create NIfTI file from 3D volume
-#                             with tempfile.NamedTemporaryFile(delete=False, suffix='.nii') as temp_nii:
-#                                 nii_img = nib.Nifti1Image(volume, np.eye(4))
-#                                 nib.save(nii_img, temp_nii.name)
-#                                 nii_path = temp_nii.name
-                                
-#                             # Process the NIfTI file as usual
-#                             preprocess_nii(nii_path, "PACS")
-                            
-#                             # Clean up
-#                             os.remove(nii_path)
-                            
-#                             # Return the processed image data
-#                             if "PACS" in scanned_images and scanned_images["PACS"]:
-#                                 return jsonify(scanned_images["PACS"]), 200
-#                             else:
-#                                 return jsonify({"error": "Failed to process PACS volume"}), 500
-                    
-#                     return jsonify({"error": "Failed to create 3D volume from DICOM series"}), 500
-                
-#         except Exception as e:
-#             print(f"❌ Error processing series: {e}")
-#             # Fall back to single slice processing
-                    
-#         # Create a temporary file to store the DICOM
-#         with tempfile.NamedTemporaryFile(delete=False, suffix='.dcm') as temp_dicom:
-#             temp_dicom.write(response.content)
-#             dicom_path = temp_dicom.name
-            
-#         # Convert DICOM to NIfTI format (single slice)
-#         try:
-#             # Load DICOM file
-#             dicom_data = pydicom.dcmread(dicom_path)
-            
-#             # Convert to NumPy array
-#             pixel_array = dicom_data.pixel_array
-            
-#             # For single slice, create a 3D volume by duplicating the slice
-#             # This is a workaround for models that expect 3D input
-#             volume = np.repeat(pixel_array[:, :, np.newaxis], 155, axis=2)  # Create a volume with 155 slices
-            
-#             # Create a NIfTI file
-#             with tempfile.NamedTemporaryFile(delete=False, suffix='.nii') as temp_nii:
-#                 # Create NIfTI image with proper orientation
-#                 nii_img = nib.Nifti1Image(volume, np.eye(4))
-#                 nib.save(nii_img, temp_nii.name)
-#                 nii_path = temp_nii.name
-                
-#             # Process the NIfTI file as usual
-#             preprocess_nii(nii_path, "PACS")
-            
-#             # Clean up temporary files
-#             os.remove(dicom_path)
-#             os.remove(nii_path)
-            
-#             # Return the processed image data
-#             if "PACS" in scanned_images and scanned_images["PACS"]:
-#                 return jsonify(scanned_images["PACS"]), 200
-#             else:
-#                 return jsonify({"error": "Failed to process PACS image"}), 500
-                
-#         except Exception as e:
-#             print(f"❌ Error converting DICOM to NIfTI: {e}")
-#             return jsonify({"error": f"Failed to convert DICOM: {str(e)}"}), 500
-            
-#     except Exception as e:
-#         print(f"❌ Error processing PACS image: {e}")
-#         return jsonify({"error": f"Failed to process PACS image: {str(e)}"}), 500
 
 @app.route('/orthanc/studies', methods=['GET'])
 def list_orthanc_studies():
@@ -967,22 +812,5 @@ def segment_dicom_from_orthanc(instance_id):
     except Exception as e:
         print(f"Error processing DICOM: {e}")
         return jsonify({"error": f"Failed to process DICOM image: {str(e)}"}), 500
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host='0.0.0.0', port=port)
-
-# Sample data just to simulate segments (replace with your own logic)
-# segments = {
-#     "00c14fb2-a30e0fbe-16f2ac6e-371c328e-916d3d64": {
-#         "status": "done",
-#         "imageUrl": "http://localhost:5001/static/segmented-image.png"
-#     }
-# }
-
-# @app.route("/orthanc/segment/<segment_id>", methods=["GET"])
-# def get_segment(segment_id):
-#     segment = segments.get(segment_id)
-#     if segment:
-#         return jsonify(segment)
-#     else:
-#         return jsonify({"error": "Segment not found"}), 404
+if _name_ == "_main_":
+    app.run(host='0.0.0.0', port=5001, debug=True)
